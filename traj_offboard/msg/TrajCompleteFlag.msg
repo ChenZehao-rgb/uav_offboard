@@ -1,0 +1,6 @@
+bool offboard_mode_active
+bool take_off_completed
+bool trajectory_completed
+
+px4_msgs/TrajectorySetpoint traj_first_setpoint
+px4_msgs/TrajectorySetpoint traj_last_setpoint
