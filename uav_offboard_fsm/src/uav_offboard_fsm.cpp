@@ -373,7 +373,7 @@ class UavOffboardFsm : public rclcpp::Node {
     int subscriber_queue_depth_{10};
     int state_feedback_queue_depth_{10};
     int sensor_queue_depth_{10};
-    int log_throttle_ms_{2000};
+    int log_throttle_ms_{5000};
     int takeoff_wait_log_throttle_ms_{1000};
     int hovering_log_throttle_ms_{3000};
     int main_task_repeat_dispatch_period_ms_{500};

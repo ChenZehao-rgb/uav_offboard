@@ -106,7 +106,7 @@ def generate_launch_description() -> LaunchDescription:
             description='true to launch the lightweight PX4 topic simulator for local validation'),
         DeclareLaunchArgument(
             'record_bag',
-            default_value='true',
+            default_value='false',
             description='true to record trajectory and FSM topics'),
         DeclareLaunchArgument(
             'log_level',
