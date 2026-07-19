@@ -243,6 +243,7 @@ class OffboardControlBridge : public rclcpp::Node {
     void OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg);
 	void publish_offboard_control_mode_pva();
     void publish_offboard_control_mode_pv();
+    void publish_offboard_control_mode_v();
 	void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f);
     void handle_set_target(const traj_offboard::srv::SetTarget::Request::SharedPtr request,
                            traj_offboard::srv::SetTarget::Response::SharedPtr response);
@@ -369,6 +370,17 @@ void OffboardControlBridge::publish_offboard_control_mode_pva() {
 void OffboardControlBridge::publish_offboard_control_mode_pv() {
     px4_msgs::msg::OffboardControlMode msg{};
     msg.position = true;
+    msg.velocity = true;
+    msg.acceleration = false;
+    msg.attitude = false;
+    msg.body_rate = false;
+    msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+    offboard_ctrl_mode_pub_->publish(msg);
+}
+
+void OffboardControlBridge::publish_offboard_control_mode_v() {
+    px4_msgs::msg::OffboardControlMode msg{};
+    msg.position = false;
     msg.velocity = true;
     msg.acceleration = false;
     msg.attitude = false;
@@ -850,8 +862,10 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 }
                 break;
             }
-            publish_offboard_control_mode_pva();
-            publish_trajectory_setpoint();
+            // publish_offboard_control_mode_pva();
+            // publish_trajectory_setpoint();
+            publish_offboard_control_mode_v();
+            publishConvertedSetpoint(target_pose_);
             break;
         }
     }

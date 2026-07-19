@@ -19,6 +19,7 @@ find_package(status_interfaces_pkg REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
@@ -27,6 +28,11 @@ if(BUILD_TESTING)
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_hold_adjust_velocity_limiter
+    test/test_hold_adjust_velocity_limiter.cpp)
+  target_include_directories(test_hold_adjust_velocity_limiter PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
 add_executable(uav_offboard_fsm_node src/uav_offboard_fsm.cpp)

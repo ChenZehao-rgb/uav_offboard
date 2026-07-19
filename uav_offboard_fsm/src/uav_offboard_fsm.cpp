@@ -15,6 +15,8 @@
 #include <traj_offboard/srv/set_target.hpp>
 #include <traj_offboard/msg/traj_complete_flag.hpp>
 
+#include <uav_offboard_fsm/hold_adjust_velocity_limiter.hpp>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -326,6 +328,8 @@ class UavOffboardFsm : public rclcpp::Node {
     std::optional<Vector3> hold_adjust_desired_local_;
     rclcpp::Time hold_adjust_last_planned_pos_des_time_{0, 0, RCL_ROS_TIME};
     rclcpp::Time hold_adjust_last_target_update_time_{0, 0, RCL_ROS_TIME};
+    Vector3 hold_adjust_last_accepted_velocity_{0.0, 0.0, 0.0};
+    uint64_t hold_adjust_request_generation_{0};
 
     double position_tolerance_{0.1};
     double yaw_tolerance_{0.1}; // 0.1 radian，约5.7度
@@ -441,7 +445,9 @@ class UavOffboardFsm : public rclcpp::Node {
     bool handleActiveTargetReached();
     void setActiveTarget(const Waypoint & waypoint);
     void clearActiveTarget();
-    bool sendActiveTarget(bool throttle_success_log = false);
+    bool sendActiveTarget(
+        bool throttle_success_log = false,
+        std::function<void()> on_success = {});
 
     void publish_vehicle_command(uint16_t command, float param1, float param2);
 
@@ -606,6 +612,8 @@ void UavOffboardFsm::onStateEntry(ControlState state)
             hold_adjust_desired_local_.reset();
             hold_adjust_last_planned_pos_des_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
             hold_adjust_last_target_update_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+            hold_adjust_last_accepted_velocity_ = {0.0, 0.0, 0.0};
+            ++hold_adjust_request_generation_;
             hold_adjust_waypoints_.clear();
             hold_adjust_index_ = 0;
             break;
@@ -674,6 +682,8 @@ void UavOffboardFsm::resetMissionProgress()
     hold_adjust_desired_local_.reset();
     hold_adjust_last_planned_pos_des_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     hold_adjust_last_target_update_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    hold_adjust_last_accepted_velocity_ = {0.0, 0.0, 0.0};
+    ++hold_adjust_request_generation_;
     hold_adjust_waypoints_.clear();
     hold_adjust_index_ = 0;
 }
@@ -958,15 +968,43 @@ bool UavOffboardFsm::handleUavHoldAdjust()
         if (!target_request_pending_ &&
             (!hold_adjust_stale_hold_sent_ || !active_target_sent_)) {
             const auto hold_target = currentOrHoverWaypoint();
+            const Vector3 zero_velocity{0.0, 0.0, 0.0};
+            const auto previous_velocity = hold_adjust_last_accepted_velocity_;
+            const auto limit_result =
+                uav_offboard_fsm::hold_adjust::limitVelocity(
+                    zero_velocity, previous_velocity);
             target_max_velocity_xyz_ = hold_adjust_max_velocity_xyz_;
-            target_velocity_ = {0.0, 0.0, 0.0};
+            target_velocity_ = limit_result.velocity;
             target_acceleration_ = {0.0, 0.0, 0.0};
             setActiveTarget(hold_target);
-            hold_adjust_stale_hold_sent_ = sendActiveTarget(true);
-            if (hold_adjust_stale_hold_sent_) {
-                RCLCPP_WARN(get_logger(),
-                            "UAV_HOLD adjust stale | sent current-position hold target");
-            } else {
+            const auto accepted_velocity = target_velocity_;
+            const auto request_generation = ++hold_adjust_request_generation_;
+            if (!sendActiveTarget(
+                    true,
+                    [this, request_generation, previous_velocity,
+                     accepted_velocity, zero_velocity]() {
+                        if (control_state_.load() != ControlState::UAV_HOLD ||
+                            request_generation != hold_adjust_request_generation_) {
+                            return;
+                        }
+                        hold_adjust_last_accepted_velocity_ = accepted_velocity;
+                        hold_adjust_last_target_update_time_ = now();
+                        hold_adjust_stale_hold_sent_ =
+                            !uav_offboard_fsm::hold_adjust::velocityChanged(
+                                hold_adjust_last_accepted_velocity_, zero_velocity);
+                        if (hold_adjust_stale_hold_sent_) {
+                            RCLCPP_WARN(
+                                get_logger(),
+                                "UAV_HOLD adjust stale | zero-velocity hold target accepted");
+                        } else {
+                            RCLCPP_WARN_THROTTLE(
+                                get_logger(), *get_clock(), 1000,
+                                "UAV_HOLD adjust stale deceleration | previous=(%.3f, %.3f, %.3f) limited=(%.3f, %.3f, %.3f)",
+                                previous_velocity[0], previous_velocity[1],
+                                previous_velocity[2], accepted_velocity[0],
+                                accepted_velocity[1], accepted_velocity[2]);
+                        }
+                    })) {
                 clearActiveTarget();
             }
         }
@@ -975,8 +1013,30 @@ bool UavOffboardFsm::handleUavHoldAdjust()
         return true;
     }
 
+    Vector3 desired_velocity = desired_setpoint->velocity;
+    Vector3 desired_acceleration = desired_setpoint->acceleration;
+    if (!use_xy_adjust_) {
+        desired_velocity[0] = 0.0;
+        desired_velocity[1] = 0.0;
+        desired_acceleration[0] = 0.0;
+        desired_acceleration[1] = 0.0;
+    }
+    if (!use_z_adjust_) {
+        desired_velocity[2] = 0.0;
+        desired_acceleration[2] = 0.0;
+    }
+
+    const auto limit_result =
+        uav_offboard_fsm::hold_adjust::limitVelocity(
+            desired_velocity, hold_adjust_last_accepted_velocity_);
+    const bool velocity_update_needed =
+        uav_offboard_fsm::hold_adjust::velocityChanged(
+            limit_result.velocity, hold_adjust_last_accepted_velocity_);
+    const bool target_retry_needed =
+        active_target_.has_value() && !active_target_sent_;
     if (desired_setpoint->stamp.nanoseconds() <=
-        hold_adjust_last_planned_pos_des_time_.nanoseconds()) {
+            hold_adjust_last_planned_pos_des_time_.nanoseconds() &&
+        !velocity_update_needed && !target_retry_needed) {
         return true;
     }
 
@@ -997,43 +1057,55 @@ bool UavOffboardFsm::handleUavHoldAdjust()
         hold_adjust_last_planned_pos_des_time_ = desired_setpoint->stamp;
         return true;
     }
-    if (hold_adjust_waypoints_.empty()) {
-        hold_adjust_last_planned_pos_des_time_ = desired_setpoint->stamp;
-        hold_adjust_started_ = true;
-        hold_adjust_stale_hold_sent_ = false;
-        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                              "UAV_HOLD adjust | desired UAV position already reached on enabled axes");
-        return true;
+
+    if (limit_result.speed_limited || limit_result.slew_limited) {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), log_throttle_ms_,
+            "UAV_HOLD velocity safety clamp | desired=(%.3f, %.3f, %.3f) speed_limited=(%.3f, %.3f, %.3f) limited=(%.3f, %.3f, %.3f)",
+            desired_velocity[0], desired_velocity[1], desired_velocity[2],
+            limit_result.speed_limited_velocity[0],
+            limit_result.speed_limited_velocity[1],
+            limit_result.speed_limited_velocity[2],
+            limit_result.velocity[0], limit_result.velocity[1],
+            limit_result.velocity[2]);
     }
 
-    const auto target = hold_adjust_waypoints_.front();
-    if (!isHoldAdjustTargetUpdateNeeded(target)) {
+    const bool has_position_target = !hold_adjust_waypoints_.empty();
+    const auto target =
+        has_position_target ? hold_adjust_waypoints_.front() : currentOrHoverWaypoint();
+    const bool position_update_needed =
+        has_position_target && isHoldAdjustTargetUpdateNeeded(target);
+    if (!position_update_needed && !velocity_update_needed &&
+        !target_retry_needed) {
         hold_adjust_last_planned_pos_des_time_ = desired_setpoint->stamp;
         hold_adjust_started_ = true;
         hold_adjust_stale_hold_sent_ = false;
+        RCLCPP_DEBUG_THROTTLE(
+            get_logger(), *get_clock(), hovering_log_throttle_ms_,
+            "UAV_HOLD adjust | desired position reached and limited velocity unchanged");
         return true;
     }
 
     target_max_velocity_xyz_ = hold_adjust_max_velocity_xyz_;
-    target_velocity_ = desired_setpoint->velocity;
-    target_acceleration_ = desired_setpoint->acceleration;
-    if (!use_xy_adjust_) {
-        target_velocity_[0] = 0.0;
-        target_velocity_[1] = 0.0;
-        target_acceleration_[0] = 0.0;
-        target_acceleration_[1] = 0.0;
-    }
-    if (!use_z_adjust_) {
-        target_velocity_[2] = 0.0;
-        target_acceleration_[2] = 0.0;
-    }
+    target_velocity_ = limit_result.velocity;
+    target_acceleration_ = desired_acceleration;
     setActiveTarget(target);
-    if (!sendActiveTarget(true)) {
+    const auto accepted_velocity = target_velocity_;
+    const auto request_generation = ++hold_adjust_request_generation_;
+    if (!sendActiveTarget(
+            true,
+            [this, request_generation, accepted_velocity]() {
+                if (control_state_.load() != ControlState::UAV_HOLD ||
+                    request_generation != hold_adjust_request_generation_) {
+                    return;
+                }
+                hold_adjust_last_accepted_velocity_ = accepted_velocity;
+                hold_adjust_last_target_update_time_ = now();
+            })) {
         clearActiveTarget();
         return true;
     }
     hold_adjust_last_planned_pos_des_time_ = desired_setpoint->stamp;
-    hold_adjust_last_target_update_time_ = now_time;
     hold_adjust_started_ = true;
     hold_adjust_stale_hold_sent_ = false;
 
@@ -1376,7 +1448,9 @@ void UavOffboardFsm::clearActiveTarget()
 }
 
 // 下发活动目标：通过 traj_offboard 的 set_target 服务把目标位置、速度、加速度和偏航速度发送给轨迹节点。
-bool UavOffboardFsm::sendActiveTarget(bool throttle_success_log)
+bool UavOffboardFsm::sendActiveTarget(
+    bool throttle_success_log,
+    std::function<void()> on_success)
 {
     if (!active_target_) {
         return false;
@@ -1413,13 +1487,17 @@ bool UavOffboardFsm::sendActiveTarget(bool throttle_success_log)
     last_target_sent_time_ = now();
     set_target_client_->async_send_request(
         request,
-        [this, target, throttle_success_log](rclcpp::Client<traj_offboard::srv::SetTarget>::SharedFuture resp_fut) {
+        [this, target, throttle_success_log, on_success](
+            rclcpp::Client<traj_offboard::srv::SetTarget>::SharedFuture resp_fut) {
             std::lock_guard<std::mutex> lock(fsm_mutex_);
             target_request_pending_ = false;
             try {
                 const auto resp = resp_fut.get();
                 if (resp->success) {
                     active_target_sent_ = true;
+                    if (on_success) {
+                        on_success();
+                    }
                     if (throttle_success_log) {
                         RCLCPP_INFO_THROTTLE(
                             get_logger(), *get_clock(), 1000,
