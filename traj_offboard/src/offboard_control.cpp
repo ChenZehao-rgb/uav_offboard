@@ -187,6 +187,10 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::TrajectorySetpoint manual_hover_setpoint_{};
     double latest_heading_yaw_enu_{0.0};
     bool has_heading_yaw_{false};
+    double pre_offboard_yaw_enu_{0.0};
+    bool has_pre_offboard_yaw_{false};
+    double offboard_entry_yaw_enu_{0.0};
+    bool has_offboard_entry_yaw_{false};
 
     std::string waypoints_csv_path_{"/home/sia/ws_sensor_combined/src/uav_offboard/waypoints.csv"};
     double csv_stream_rate_hz_{20.0};
@@ -253,10 +257,13 @@ class OffboardControlBridge : public rclcpp::Node {
     static double wrapAngle(double angle);
     double getCurrentYawEnu() const;
     px4_msgs::msg::TrajectorySetpoint convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
+    px4_msgs::msg::TrajectorySetpoint convertENUToNED_only_v(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
     px4_msgs::msg::TrajectorySetpoint makePositionHoldSetpoint(float x, float y, float z, float yaw) const;
     px4_msgs::msg::TrajectorySetpoint makeCurrentLocalPositionHoldSetpoint() const;
     px4_msgs::msg::TrajectorySetpoint makeCsvSetpoint(const CsvWaypoint & waypoint) const;
     px4_msgs::msg::TrajectorySetpoint publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint);
+    px4_msgs::msg::TrajectorySetpoint publishConvertedSetpoint_only_v(px4_msgs::msg::TrajectorySetpoint enu_setpoint);
+
     void publishManualHoverSetpoint();
     void captureManualHoverSetpoint();
     bool isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoint setpoint, float tolerance);
@@ -305,6 +312,11 @@ void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::Ve
         // PX4 heading is clockwise from North, we want counterclockwise from East, so ENU yaw = 90deg - heading
         latest_heading_yaw_enu_ = wrapAngle(HALF_PI - static_cast<double>(msg->heading));
         has_heading_yaw_ = true;
+        if (!px4_offboard_active_) {
+            std::lock_guard<std::mutex> lock(bridge_mutex_);
+            pre_offboard_yaw_enu_ = latest_heading_yaw_enu_;
+            has_pre_offboard_yaw_ = true;
+        }
     }
 }
 void OffboardControlBridge::VehicleAttitudeCallback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {
@@ -332,16 +344,51 @@ void OffboardControlBridge::VehicleStatusCallback(const px4_msgs::msg::VehicleSt
     px4_offboard_active_ =
         msg->nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
     // px4_offboard_disabled = msg->nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_MANUAL;
+
+    const bool entered_offboard = !was_offboard && px4_offboard_active_;
+    const bool exited_offboard = was_offboard && !px4_offboard_active_;
+    bool entry_yaw_captured = false;
+    double entry_yaw_enu = 0.0;
+    if (entered_offboard) {
+        {
+            std::lock_guard<std::mutex> lock(bridge_mutex_);
+            if (has_pre_offboard_yaw_) {
+                offboard_entry_yaw_enu_ = pre_offboard_yaw_enu_;
+                has_offboard_entry_yaw_ = true;
+                entry_yaw_enu = offboard_entry_yaw_enu_;
+                entry_yaw_captured = true;
+            } else {
+                has_offboard_entry_yaw_ = false;
+            }
+            has_pre_offboard_yaw_ = false;
+        }
+        if (entry_yaw_captured) {
+            RCLCPP_INFO(get_logger(),
+                        "PX4 OFFBOARD entered | velocity-control yaw locked enu=%.3f rad",
+                        entry_yaw_enu);
+        } else {
+            RCLCPP_WARN(get_logger(),
+                        "PX4 OFFBOARD entered without a valid pre-entry heading | yaw control will be disabled");
+        }
+    } else if (exited_offboard) {
+        {
+            std::lock_guard<std::mutex> lock(bridge_mutex_);
+            has_offboard_entry_yaw_ = false;
+            has_pre_offboard_yaw_ = false;
+        }
+        RCLCPP_INFO(get_logger(), "PX4 OFFBOARD exited | velocity-control yaw lock cleared");
+    }
+
     if (use_takeoff_on_ground_) {
         return;
     }
     // 之前不是 OFFBOARD，现在是 OFFBOARD。switch moment
-    if (!was_offboard && px4_offboard_active_) {
+    if (entered_offboard) {
         captureManualHoverSetpoint();
         return;
     }
 
-    if (was_offboard && !px4_offboard_active_) {
+    if (exited_offboard) {
         manual_hover_setpoint_valid_ = false;
         RCLCPP_INFO(get_logger(), "PX4 OFFBOARD exited | manual hover setpoint cleared");
     }
@@ -453,6 +500,38 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::convertENUToNED(const p
 
     return ned_setpoint;
 }
+
+px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::convertENUToNED_only_v(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const {
+    px4_msgs::msg::TrajectorySetpoint ned_setpoint = enu_setpoint;
+
+    // Position
+    ned_setpoint.position[0] = nanf(""); // Mark position as NaN to indicate it's not being used
+    ned_setpoint.position[1] = nanf("");
+    ned_setpoint.position[2] = nanf("");
+
+    // Velocity
+    ned_setpoint.velocity[0] = enu_setpoint.velocity[1];
+    ned_setpoint.velocity[1] = enu_setpoint.velocity[0];
+    ned_setpoint.velocity[2] = -enu_setpoint.velocity[2];
+
+    // Acceleration
+    // ned_setpoint.acceleration[0] = enu_setpoint.acceleration[1];
+    // ned_setpoint.acceleration[1] = enu_setpoint.acceleration[0];
+    // ned_setpoint.acceleration[2] = -enu_setpoint.acceleration[2];
+
+    // Jerk
+    // ned_setpoint.jerk[0] = enu_setpoint.jerk[1];
+    // ned_setpoint.jerk[1] = enu_setpoint.jerk[0];
+    // ned_setpoint.jerk[2] = -enu_setpoint.jerk[2];
+
+    static constexpr float HALF_PI = 1.57079632679f;
+    const float yaw_ned = HALF_PI - enu_setpoint.yaw;
+    ned_setpoint.yaw = std::atan2(std::sin(yaw_ned), std::cos(yaw_ned));
+    ned_setpoint.yawspeed = -enu_setpoint.yawspeed;
+
+    return ned_setpoint;
+}
+
 px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makePositionHoldSetpoint(float x, float y, float z, float yaw) const {
     px4_msgs::msg::TrajectorySetpoint setpoint{};
     setpoint.position[0] = x;
@@ -534,6 +613,19 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const C
 px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint) {
     enu_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
     auto ned_setpoint = convertENUToNED(enu_setpoint);
+    if(px4_offboard_active_){
+        traj_setpoint_pub_->publish(ned_setpoint);
+    }
+    else {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "PX4 OFFBOARD inactive | not publishing setpoint");
+    }
+    return enu_setpoint;
+}
+
+px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::publishConvertedSetpoint_only_v(px4_msgs::msg::TrajectorySetpoint enu_setpoint) {
+    enu_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+    auto ned_setpoint = convertENUToNED_only_v(enu_setpoint);
     if(px4_offboard_active_){
         traj_setpoint_pub_->publish(ned_setpoint);
     }
@@ -727,7 +819,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
     traj_completed_flag_pub_->publish(traj_complete_flag_);
     switch (flight_state_) {
         case FlightState::WAITINGFORCOMMAND: {
-            publish_offboard_control_mode_pva();
+            publish_offboard_control_mode_v();
             if (use_takeoff_on_ground_) {
                 if(offboard_state_.data == "UAV_START") {
                     flight_state_ = FlightState::TAKEOFF;
@@ -838,11 +930,17 @@ void OffboardControlBridge::controlLoopOnTimer() {
             std::string current_offboard_state;
             bool has_target_now = false;
             bool csv_transit_done = false;
+            bool has_entry_yaw = false;
+            double entry_yaw_enu = 0.0;
+            px4_msgs::msg::TrajectorySetpoint velocity_target;
             {
                 std::lock_guard<std::mutex> lock(bridge_mutex_);
                 current_offboard_state = offboard_state_.data;
                 has_target_now = has_target_;
                 csv_transit_done = csv_transit_complete_logged_;
+                velocity_target = target_pose_;
+                has_entry_yaw = has_offboard_entry_yaw_;
+                entry_yaw_enu = offboard_entry_yaw_enu_;
             }
             if (current_offboard_state == "TRANSIT_TO_AREA" && !csv_waypoints_.empty() && !csv_transit_done) {
                 publish_offboard_control_mode_pv();
@@ -865,7 +963,19 @@ void OffboardControlBridge::controlLoopOnTimer() {
             // publish_offboard_control_mode_pva();
             // publish_trajectory_setpoint();
             publish_offboard_control_mode_v();
-            publishConvertedSetpoint(target_pose_);
+            if (has_entry_yaw) {
+                velocity_target.yaw = static_cast<float>(entry_yaw_enu);
+                velocity_target.yawspeed = 0.0f;
+            } else {
+                velocity_target.yaw = nanf("");
+                velocity_target.yawspeed = nanf("");
+                if (px4_offboard_active_) {
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(), *get_clock(), 3000,
+                        "Velocity-only setpoint has no OFFBOARD-entry heading | yaw and yawspeed disabled");
+                }
+            }
+            publishConvertedSetpoint_only_v(velocity_target);
             break;
         }
     }
