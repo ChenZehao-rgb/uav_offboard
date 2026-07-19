@@ -198,6 +198,7 @@ class OffboardControlBridge : public rclcpp::Node {
     // Set when CSV transit finishes so the next trajectory request re-anchors
     // the generator's internal state to the real vehicle position.
     bool need_traj_reseed_{false};
+    bool trajectory_seeded_{false};
 
     traj_offboard::msg::TrajCompleteFlag traj_complete_flag_{};
     
@@ -331,6 +332,18 @@ void OffboardControlBridge::VehicleStatusCallback(const px4_msgs::msg::VehicleSt
     px4_offboard_active_ =
         msg->nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
     // px4_offboard_disabled = msg->nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_MANUAL;
+    // Entering OFFBOARD must re-anchor the trajectory generator to the current
+    // vehicle state before the next trajectory setpoint is generated.
+    if (!was_offboard && px4_offboard_active_) {
+        std::lock_guard<std::mutex> lock(bridge_mutex_);
+        trajectory_seeded_ = false;
+        need_traj_reseed_ = true;
+        target_pose_ = makeCurrentLocalPositionHoldSetpoint();
+        ++target_generation_;
+        // RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "PX4 OFFBOARD entered | trajectory generator will be re-anchored to current vehicle state, target_pose = (%.2f, %.2f, %.2f)" LOG_COLOR_RESET,
+        //             target_pose_.position[0], target_pose_.position[1], target_pose_.position[2]);
+
+    }
     if (use_takeoff_on_ground_) {
         return;
     }
@@ -341,6 +354,10 @@ void OffboardControlBridge::VehicleStatusCallback(const px4_msgs::msg::VehicleSt
     }
 
     if (was_offboard && !px4_offboard_active_) {
+        {
+            std::lock_guard<std::mutex> lock(bridge_mutex_);
+            trajectory_seeded_ = false;
+        }
         manual_hover_setpoint_valid_ = false;
         RCLCPP_INFO(get_logger(), "PX4 OFFBOARD exited | manual hover setpoint cleared");
     }
@@ -596,8 +613,9 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
             }
             if (sent_reset) {
                 need_traj_reseed_ = false;
+                trajectory_seeded_ = true;
                 RCLCPP_INFO(this->get_logger(),
-                            "Trajectory generator re-anchored after CSV transit | target=(%.2f, %.2f, %.2f)",
+                            "Trajectory generator re-anchored | target=(%.2f, %.2f, %.2f)",
                             target_pose.position[0], target_pose.position[1], target_pose.position[2]);
             }
             if (sent_target_update && forwarded_target_generation_ < sent_generation) {
@@ -708,11 +726,31 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
 }
 void OffboardControlBridge::controlLoopOnTimer() {
     traj_complete_flag_.offboard_mode_active = px4_offboard_active_;
+    {
+        std::lock_guard<std::mutex> lock(bridge_mutex_);
+        traj_complete_flag_.trajectory_seeded = trajectory_seeded_;
+    }
     traj_complete_flag_.take_off_completed = takeoff_complete_;
     traj_complete_flag_.trajectory_completed = csv_transit_complete_logged_;
     traj_complete_flag_.traj_first_setpoint = takeoff_setpoint_;
     traj_complete_flag_.traj_last_setpoint = traj_end_setpoint_;
     traj_completed_flag_pub_->publish(traj_complete_flag_);
+
+    // The first OFFBOARD trajectory request must seed both Ruckig's current
+    // state and target with the captured hover pose.
+    if (px4_offboard_active_) {
+        bool reseed_pending = false;
+        {
+            std::lock_guard<std::mutex> lock(bridge_mutex_);
+            reseed_pending = need_traj_reseed_ && !trajectory_seeded_;
+        }
+        if (reseed_pending) {
+            publish_offboard_control_mode_pva();
+            publish_trajectory_setpoint();
+            return;
+        }
+    }
+
     switch (flight_state_) {
         case FlightState::WAITINGFORCOMMAND: {
             publish_offboard_control_mode_pva();

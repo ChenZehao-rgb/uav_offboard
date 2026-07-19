@@ -943,10 +943,20 @@ void UavOffboardFsm::handleUavHold()
 // 跳过当前周期，下一周期继续使用缓存的最新 setpoint。
 bool UavOffboardFsm::handleUavHoldAdjust()
 {
-    if (!use_xy_adjust_ && !use_z_adjust_) {
+    if (!use_xy_adjust_ && !use_z_adjust_ ) {
         return true;
     }
-
+    
+    if (!traj_complete_flag_.offboard_mode_active) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
+                             "UAV_HOLD adjust blocked | offboard mode is not active");
+        return false;
+    }
+    if (!traj_complete_flag_.trajectory_seeded) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
+                             "UAV_HOLD adjust blocked | waiting for OFFBOARD trajectory reseed");
+        return false;
+    }
     const auto desired_setpoint = latestFreshHoldUavSetpoint();
     if (!desired_setpoint) {
         if (!hold_adjust_started_) {
@@ -956,7 +966,7 @@ bool UavOffboardFsm::handleUavHoldAdjust()
         }
 
         if (!target_request_pending_ &&
-            (!hold_adjust_stale_hold_sent_ || !active_target_sent_)) {
+            (!hold_adjust_stale_hold_sent_ || !active_target_sent_) ) {
             const auto hold_target = currentOrHoverWaypoint();
             target_max_velocity_xyz_ = hold_adjust_max_velocity_xyz_;
             target_velocity_ = {0.0, 0.0, 0.0};

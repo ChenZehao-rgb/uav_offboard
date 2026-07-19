@@ -43,7 +43,7 @@ def generate_launch_description() -> LaunchDescription:
         '/online_traj_generator/ruckig_command',
         '/online_traj_generator/ruckig_targ',
         '/uav_offboard_fsm/status',
-        # '/uav_offboard_fsm/status_text',
+        '/uav_offboard_fsm/status_text',
         '/uav_offboard_fsm/offboard_state',
         '/uav_offboard_fsm/control_command',
         '/fmu/out/vehicle_local_position',
@@ -106,7 +106,7 @@ def generate_launch_description() -> LaunchDescription:
             description='true to launch the lightweight PX4 topic simulator for local validation'),
         DeclareLaunchArgument(
             'record_bag',
-            default_value='false',
+            default_value='true',
             description='true to record trajectory and FSM topics'),
         DeclareLaunchArgument(
             'log_level',

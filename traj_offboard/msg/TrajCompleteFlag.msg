@@ -1,4 +1,5 @@
 bool offboard_mode_active
+bool trajectory_seeded
 bool take_off_completed
 bool trajectory_completed
 
