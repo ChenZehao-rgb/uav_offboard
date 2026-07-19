@@ -1274,8 +1274,8 @@ void UavOffboardFsm::publishActuatorCommand()
             get_logger(), *get_clock(), log_throttle_ms_,
             "Actuator command blocked init| %s",
             manual_control_setpoint_received_.load()
-                ? "manual_control_setpoint aux1 >= 0.0 or invalid"
-                : "waiting for manual_control_setpoint aux1 < 0.0");
+                ? "manual_control_setpoint aux3 >= 0.0 or invalid"
+                : "waiting for manual_control_setpoint aux3 < 0.0");
             return;
         }
         publish_vehicle_command(
@@ -1287,8 +1287,8 @@ void UavOffboardFsm::publishActuatorCommand()
             get_logger(), *get_clock(), log_throttle_ms_,
             "Actuator command blocked | %s",
             manual_control_setpoint_received_.load()
-                ? "manual_control_setpoint aux1 >= 0.0 or invalid"
-                : "waiting for manual_control_setpoint aux1 < 0.0");
+                ? "manual_control_setpoint aux3 >= 0.0 or invalid"
+                : "waiting for manual_control_setpoint aux3 < 0.0");
         return;
     }
 
@@ -2346,7 +2346,7 @@ void UavOffboardFsm::handleDistanceSensor(const px4_msgs::msg::DistanceSensor::S
     }
 }
 
-// 手动通道 aux1 作为执行器命令安全门：aux1 < 0.5 时允许 actuator_timer_ 正常重发，否则禁止向 PX4 发布。
+// 手动通道 aux3 作为执行器命令安全门：aux3 < 0.0f 时允许 actuator_timer_ 正常重发，否则禁止向 PX4 发布。
 void UavOffboardFsm::handleManualControlSetpoint(
     const px4_msgs::msg::ManualControlSetpoint::SharedPtr msg)
 {
