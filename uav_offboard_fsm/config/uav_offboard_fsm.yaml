@@ -17,12 +17,14 @@ uav_offboard_fsm:
     # true: SELF_CHECK 完成后收到 WAIT_TASK_ENABLE_AUTH 直接进入 UAV_HOLD，用于跳过起飞/搜索/接近/采样微调流程。
     direct_to_uav_hold_after_self_check: true
 
-    # UAV_HOLD 内 whole_body_planner 的 UAV 期望位置持续调整。
+    # UAV_HOLD 内 whole_body_planner 的 UAV 期望位姿持续调整。
     # 输入 topic: /whole_body_planner/uav_setpoint (px4_msgs/TrajectorySetpoint)。
     # position 为 PX4 local NED 绝对坐标；FSM 内部转换为 ENU-relative 后下发给 Ruckig。
-    # xy/z 可独立开启；都为 true 时持续调整 xyz。
+    # 未控制的位置轴允许填 NaN；仅更新 yaw 时也可将全部 position 填为 NaN。
+    # xy/z/yaw 可独立开启；yaw 输入按 NED 定义，FSM 转为 ENU 后交给 Ruckig。
     use_xy_adjust: true
     use_z_adjust: false
+    use_yaw_adjust: true
 
     # UAV 期望 setpoint 新鲜度超时，单位 s。
     hold_adjust_pos_des_timeout_s: 0.2
