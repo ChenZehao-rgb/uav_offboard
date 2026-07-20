@@ -1799,6 +1799,15 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
     do { if (quiet_reject) { RCLCPP_DEBUG(get_logger(), __VA_ARGS__); } \
          else { RCLCPP_WARN(get_logger(), __VA_ARGS__); } } while (0)
 
+    // UAV_HOLD 对主状态机输入保持锁定，避免后续重复或乱序状态重新触发自检/流程切换。
+    // quiet_reject 仅用于 /main_task_fsm/task_states 路径，键盘调试命令仍可正常处理。
+    if (quiet_reject && state == ControlState::UAV_HOLD) {
+        RCLCPP_DEBUG_THROTTLE(
+            get_logger(), *get_clock(), log_throttle_ms_,
+            "Main task command ignored | UAV_HOLD is latched source=%s", source.c_str());
+        return;
+    }
+
     if (command_type == CommandType::PRE_CHECK) {
         resetMissionProgress();
         self_check_requested_ = true;
@@ -2410,33 +2419,33 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
         return;
     }
 
-    const auto finiteOrZero = [](float value) -> double {
-        return std::isfinite(value) ? static_cast<double>(value) : 0.0;
-    };
+    // const auto finiteOrZero = [](float value) -> double {
+    //     return std::isfinite(value) ? static_cast<double>(value) : 0.0;
+    // };
     const Vector3 pos_ned{
         static_cast<double>(msg->position[0]),
         static_cast<double>(msg->position[1]),
         static_cast<double>(msg->position[2])};
-    const Vector3 vel_ned{
-        finiteOrZero(msg->velocity[0]),
-        finiteOrZero(msg->velocity[1]),
-        finiteOrZero(msg->velocity[2])};
+    // const Vector3 vel_ned{
+    //     finiteOrZero(msg->velocity[0]),
+    //     finiteOrZero(msg->velocity[1]),
+    //     finiteOrZero(msg->velocity[2])};
     // const Vector3 acc_ned{
     //     finiteOrZero(msg->acceleration[0]),
     //     finiteOrZero(msg->acceleration[1]),
     //     finiteOrZero(msg->acceleration[2])};
 
     Vector3 pos_fsm{};
-    Vector3 vel_fsm{};
+    // Vector3 vel_fsm{};
     std::optional<double> yaw_fsm;
-    std::optional<double> yawspeed_fsm;
+    // std::optional<double> yawspeed_fsm;
     // Vector3 acc_fsm{};
     if (std::isfinite(msg->yaw)) {
         yaw_fsm =
             wrapAngle(heading_yaw_offset_rad_ - static_cast<double>(msg->yaw));
-        if (std::isfinite(msg->yawspeed)) {
-            yawspeed_fsm = -static_cast<double>(msg->yawspeed);
-        }
+        // if (std::isfinite(msg->yawspeed)) {
+        //     yawspeed_fsm = -static_cast<double>(msg->yawspeed);
+        // }
     }
     if (use_yaw_adjust_ && !yaw_fsm && std::isfinite(msg->yawspeed) &&
         std::abs(msg->yawspeed) > yawspeed_update_tolerance_rad_s_) {
@@ -2466,19 +2475,19 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
                 std::isfinite(pos_ned[1]) ? pos_ned[1] - home_y_ : pos_ned[1],
                 std::isfinite(pos_ned[0]) ? pos_ned[0] - home_x_ : pos_ned[0],
                 std::isfinite(pos_ned[2]) ? -pos_ned[2] + home_z_ : pos_ned[2]};
-            vel_fsm = {
-                vel_ned[1],
-                vel_ned[0],
-                -vel_ned[2]};
+            // vel_fsm = {
+            //     vel_ned[1],
+            //     vel_ned[0],
+            //     -vel_ned[2]};
             // acc_fsm = {
             //     acc_ned[1],
             //     acc_ned[0],
             //     -acc_ned[2]};
             latest_hold_uav_setpoint_ = pos_fsm;
-            latest_hold_uav_velocity_ = vel_fsm;
+            // latest_hold_uav_velocity_ = vel_fsm;
             // latest_hold_uav_acceleration_ = acc_fsm;
             latest_hold_uav_yaw_ = yaw_fsm;
-            latest_hold_uav_yaw_rate_ = yawspeed_fsm;
+            // latest_hold_uav_yaw_rate_ = yawspeed_fsm;
             last_hold_pos_des_time_ = stamp;
         }
     }
@@ -2488,12 +2497,12 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
         return;
     }
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                          "Whole body UAV setpoint received | ned=(%.3f, %.3f, %.3f) fsm=(%.3f, %.3f, %.3f) vel_fsm=(%.3f, %.3f, %.3f) yaw_controlled=%s yaw_fsm=%.3f yawspeed_fsm=%.3f",
+                          "Whole body UAV setpoint received | ned=(%.3f, %.3f, %.3f) fsm=(%.3f, %.3f, %.3f) yaw_controlled=%s yaw_fsm=%.3f",
                           pos_ned[0], pos_ned[1], pos_ned[2],
                           pos_fsm[0], pos_fsm[1], pos_fsm[2],
-                          vel_fsm[0], vel_fsm[1], vel_fsm[2],
+                        //   vel_fsm[0], vel_fsm[1], vel_fsm[2],
                           yaw_fsm ? "true" : "false",
-                          yaw_fsm.value_or(0.0), yawspeed_fsm.value_or(0.0));
+                          yaw_fsm.value_or(0.0));
 }
 
 // void UavOffboardFsm::handleActuatorOutputs(const px4_msgs::msg::ActuatorOutputs::SharedPtr msg)
