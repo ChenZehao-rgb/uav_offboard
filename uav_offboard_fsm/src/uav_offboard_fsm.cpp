@@ -381,7 +381,7 @@ class UavOffboardFsm : public rclcpp::Node {
     int sensor_queue_depth_{10};
     int log_throttle_ms_{2000};
     int takeoff_wait_log_throttle_ms_{2000};
-    int hovering_log_throttle_ms_{2000};
+    int hovering_log_throttle_ms_{3000};
     int main_task_repeat_dispatch_period_ms_{500};
     int switch_status_urgency_{5};
 
@@ -700,8 +700,8 @@ void UavOffboardFsm::handleSelfCheck()
 
     if (!isSelfCheckOK()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "SELF_CHECK | pending distance_sensor_ok=%s vehicle_local_position_ok=%s home_position_ok=%s",
-                             hasFreshDistanceSensor() ? "true" : "false",
+                             "SELF_CHECK | offboard_ok=%s vehicle_local_position_ok=%s home_position_ok=%s",
+                             (traj_complete_flag_.offboard_mode_active == 1) ? "true" : "false",
                              hasFreshVehicleLocalPosition() ? "true" : "false",
                              hasValidHomePosition() ? "true" : "false");
         return;
@@ -1291,7 +1291,7 @@ void UavOffboardFsm::handleActuatorControl(
     actuator_cut.store(request->cut ? 1.0f : -1.0f);
     actuator_close_init_cycles_remaining.store(request->close ? 0 : 0);
     response->success = true;
-    RCLCPP_DEBUG(get_logger(),
+    RCLCPP_INFO(get_logger(),
                  LOG_COLOR_BLUE "ActuatorControl | close=%d cut=%d -> setpoint updated" LOG_COLOR_RESET,
                 static_cast<int>(request->close), static_cast<int>(request->cut));
 }

@@ -10,11 +10,32 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def resolve_workspace_root(launch_file: Path) -> Path:
+    """Walk up to find the ROS workspace root."""
+    for parent in launch_file.parents:
+        if (parent / 'src').is_dir() and (
+            (parent / 'build').is_dir() or (parent / 'install').is_dir()
+        ):
+            return parent
+    for parent in launch_file.parents:
+        src_dir = parent / 'src'
+        if src_dir.is_dir():
+            try:
+                if any((src_dir / child).is_dir() for child in src_dir.iterdir()):
+                    return parent
+            except (OSError, PermissionError):
+                continue
+    return Path.cwd()
+
+
 def generate_launch_description():
     # Compatibility launch kept under rapid_trajectory_generator, but it no
     # longer starts any rapid_trajectory_generator executables.
-    default_bag_output = Path('bag') / f'traj_offboard_bag_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-    default_bag_output.parent.mkdir(parents=True, exist_ok=True)
+    launch_file = Path(__file__).resolve()
+    workspace_dir = resolve_workspace_root(launch_file)
+    bag_dir = workspace_dir / 'bag'
+    bag_dir.mkdir(parents=True, exist_ok=True)
+    default_bag_output = bag_dir / f'traj_offboard_bag_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
     bag_output = LaunchConfiguration('bag_output')
     use_mock_px4 = LaunchConfiguration('use_mock_px4')
     use_keyboard = LaunchConfiguration('use_keyboard')

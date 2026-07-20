@@ -13,9 +13,28 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def resolve_workspace_root(launch_file: Path) -> Path:
+    """Walk up to find the ROS workspace root.
+
+    A ROS workspace root has src/ containing packages, plus build/ and install/
+    after a colcon build. Package-level src/ directories (containing C++/Python
+    source files) should NOT match -- we skip those by requiring build/ or install/
+    to also be present.
+    """
     for parent in launch_file.parents:
-        if (parent / 'src').exists():
+        if (parent / 'src').is_dir() and (
+            (parent / 'build').is_dir() or (parent / 'install').is_dir()
+        ):
             return parent
+    # Fallback for unbuilt workspaces: first parent whose src/ contains
+    # subdirectories (packages), not just source files.
+    for parent in launch_file.parents:
+        src_dir = parent / 'src'
+        if src_dir.is_dir():
+            try:
+                if any((src_dir / child).is_dir() for child in src_dir.iterdir()):
+                    return parent
+            except (OSError, PermissionError):
+                continue
     return Path.cwd()
 
 
