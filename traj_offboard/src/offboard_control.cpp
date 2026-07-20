@@ -368,7 +368,7 @@ void OffboardControlBridge::OffboardStateCallback(const std_msgs::msg::String::S
     offboard_state_ = *msg;
     if (previous_state != "TRANSIT_TO_AREA" && offboard_state_.data == "TRANSIT_TO_AREA") {
         reset_csv_transit();
-        RCLCPP_INFO(get_logger(), "CSV transit start | count=%zu rate=%.2fHz",
+        RCLCPP_DEBUG(get_logger(), "CSV transit start | count=%zu rate=%.2fHz",
                     csv_waypoints_.size(), csv_stream_rate_hz_);
     }
 }
@@ -406,7 +406,7 @@ void OffboardControlBridge::handle_set_target(const traj_offboard::srv::SetTarge
     ++target_generation_;
     response->success = true;
     has_target_ = true;
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
                 LOG_COLOR_BLUE "Target received | generation=%" PRIu64 " enu=(%.2f, %.2f, %.2f, yaw %.2f) max_vel_xyz=(%.2f, %.2f, %.2f)" LOG_COLOR_RESET,
                 target_generation_,
                 target_pose_.position[0], target_pose_.position[1],
@@ -487,7 +487,7 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCurrentLocalPositio
 
 void OffboardControlBridge::publishManualHoverSetpoint() {
     if (!manual_hover_setpoint_valid_) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                              "Manual hover unavailable | waiting for PX4 OFFBOARD switch and valid local position");
         return;
     }
@@ -505,7 +505,7 @@ void OffboardControlBridge::captureManualHoverSetpoint() {
 
     manual_hover_setpoint_ = makeCurrentLocalPositionHoldSetpoint();
     manual_hover_setpoint_valid_ = true;
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
                 "PX4 OFFBOARD entered manually | holding latest local position enu=(%.2f, %.2f, %.2f, yaw %.2f)",
                 manual_hover_setpoint_.position[0],
                 manual_hover_setpoint_.position[1],
@@ -543,7 +543,7 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::publishConvertedSetpoin
         traj_setpoint_pub_->publish(ned_setpoint);
     }
     else {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                              "PX4 OFFBOARD inactive | not publishing setpoint");
     }
     return enu_setpoint;
@@ -569,14 +569,14 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     bool sent_reset = false;
 
     while (!get_traj_setpoint_client_->service_is_ready()) {
-        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000,
+        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
                               "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
     {
         std::lock_guard<std::mutex> lock(bridge_mutex_);
         if(pending_request_) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                                  "Trajectory request pending | skipping until previous response returns");
             return;
         }
@@ -614,14 +614,14 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
             if (sent_reset) {
                 need_traj_reseed_ = false;
                 trajectory_seeded_ = true;
-                RCLCPP_INFO(this->get_logger(),
+                RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                             "Trajectory generator re-anchored | target=(%.2f, %.2f, %.2f)",
                             target_pose.position[0], target_pose.position[1], target_pose.position[2]);
             }
             if (sent_target_update && forwarded_target_generation_ < sent_generation) {
                 forwarded_target_generation_ = sent_generation;
-                RCLCPP_INFO(this->get_logger(),
-                            LOG_COLOR_BLUE "Target forwarded to trajectory generator | generation=%" PRIu64 " target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
+                RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                            LOG_COLOR_BLUE "Target forwarded | generation=%" PRIu64 " target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
                             sent_generation, target_pose.position[0], target_pose.position[1],
                             target_pose.position[2], target_pose.yaw);
             }
@@ -639,7 +639,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
 
 void OffboardControlBridge::publish_csv_transit_setpoint() {
     if (csv_waypoints_.empty()) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                              "CSV transit unavailable | no loaded waypoints");
         return;
     }
@@ -678,14 +678,14 @@ void OffboardControlBridge::reset_csv_transit() {
 void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint) {
     px4_msgs::msg::TrajectorySetpoint current_state;
     while (!get_traj_setpoint_client_->service_is_ready()) {
-        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000,
+        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
                               "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
     {
         std::lock_guard<std::mutex> lock(bridge_mutex_);
         if(pending_request_) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                                  "Trajectory request pending | skipping until previous response returns");
             return;
         }

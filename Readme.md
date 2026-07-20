@@ -412,7 +412,7 @@ fast-discovery-server -i 0 -l 192.168.4.2 -p 11811
 启动 agent（串口连接飞控）：
 
 ```bash
-MicroXRCEAgent serial --dev /dev/ttyTHS1 -b 921600 -c px4_participant.xml
+MicroXRCEAgent serial --dev /dev/ttyTHS1 -b 921600
 ```
 
 ## 3. RealSense 相机启动

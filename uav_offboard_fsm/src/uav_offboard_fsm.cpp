@@ -379,9 +379,9 @@ class UavOffboardFsm : public rclcpp::Node {
     int subscriber_queue_depth_{10};
     int state_feedback_queue_depth_{10};
     int sensor_queue_depth_{10};
-    int log_throttle_ms_{5000};
-    int takeoff_wait_log_throttle_ms_{1000};
-    int hovering_log_throttle_ms_{3000};
+    int log_throttle_ms_{2000};
+    int takeoff_wait_log_throttle_ms_{2000};
+    int hovering_log_throttle_ms_{2000};
     int main_task_repeat_dispatch_period_ms_{500};
     int switch_status_urgency_{5};
 
@@ -447,7 +447,7 @@ class UavOffboardFsm : public rclcpp::Node {
     bool handleActiveTargetReached();
     void setActiveTarget(const Waypoint & waypoint);
     void clearActiveTarget();
-    bool sendActiveTarget(bool throttle_success_log = false);
+    bool sendActiveTarget();
 
     void publish_vehicle_command(uint16_t command, float param1, float param2);
 
@@ -977,7 +977,7 @@ bool UavOffboardFsm::handleUavHoldAdjust()
             target_velocity_ = {0.0, 0.0, 0.0};
             target_acceleration_ = {0.0, 0.0, 0.0};
             setActiveTarget(hold_target);
-            hold_adjust_stale_hold_sent_ = sendActiveTarget(true);
+            hold_adjust_stale_hold_sent_ = sendActiveTarget();
             if (hold_adjust_stale_hold_sent_) {
                 RCLCPP_WARN(get_logger(),
                             "UAV_HOLD adjust stale | sent current-position hold target");
@@ -1050,7 +1050,7 @@ bool UavOffboardFsm::handleUavHoldAdjust()
         target_acceleration_[2] = 0.0;
     }
     setActiveTarget(target);
-    if (!sendActiveTarget(true)) {
+    if (!sendActiveTarget()) {
         clearActiveTarget();
         return true;
     }
@@ -1059,8 +1059,8 @@ bool UavOffboardFsm::handleUavHoldAdjust()
     hold_adjust_started_ = true;
     hold_adjust_stale_hold_sent_ = false;
 
-    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
-                          "UAV_HOLD realtime target sent | desired_fsm=(%.3f, %.3f, %.3f) target_yaw=%.3f target_yawspeed=%.3f",
+    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
+                          "UAV_HOLD realtime setpoint | desired_fsm=(%.3f, %.3f, %.3f) yaw=%.3f yawspeed=%.3f",
                           desired_setpoint->position[0], desired_setpoint->position[1],
                           desired_setpoint->position[2], target.yaw, target.yawspeed);
     return true;
@@ -1134,7 +1134,7 @@ bool UavOffboardFsm::generateHoldAdjustWaypoints(
         hold_adjust_waypoints_.push_back(target);
     }
 
-    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
+    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
                           "UAV_HOLD adjust plan | current=(%.3f, %.3f, %.3f, yaw %.3f) desired_fsm=(%.3f, %.3f, %.3f) target=(%.3f, %.3f, %.3f, yaw %.3f, yawspeed %.3f) waypoints=%zu use_xy=%s use_z=%s use_yaw=%s clamped=%s",
                           base.x, base.y, base.z, base.yaw,
                           desired[0], desired[1], desired[2],
@@ -1291,7 +1291,7 @@ void UavOffboardFsm::handleActuatorControl(
     actuator_cut.store(request->cut ? 1.0f : -1.0f);
     actuator_close_init_cycles_remaining.store(request->close ? 0 : 0);
     response->success = true;
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_DEBUG(get_logger(),
                  LOG_COLOR_BLUE "ActuatorControl | close=%d cut=%d -> setpoint updated" LOG_COLOR_RESET,
                 static_cast<int>(request->close), static_cast<int>(request->cut));
 }
@@ -1361,7 +1361,7 @@ bool UavOffboardFsm::handleWaypointSequence(std::vector<Waypoint> & waypoints,
 
     if (!active_target_) {
         setActiveTarget(waypoints[index]);
-        RCLCPP_INFO(get_logger(),
+        RCLCPP_DEBUG(get_logger(),
                     LOG_COLOR_BLUE "Waypoint dispatch | stage=%s index=%zu/%zu target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
                     label.c_str(), index + 1, waypoints.size(), active_target_->x,
                     active_target_->y, active_target_->z, active_target_->yaw);
@@ -1371,7 +1371,7 @@ bool UavOffboardFsm::handleWaypointSequence(std::vector<Waypoint> & waypoints,
         return false;
     }
 
-    RCLCPP_INFO(get_logger(), "Waypoint reached | stage=%s index=%zu", label.c_str(), index + 1);
+    RCLCPP_DEBUG(get_logger(), "Waypoint reached | stage=%s index=%zu", label.c_str(), index + 1);
     ++index;
     clearActiveTarget();
     return index >= waypoints.size();
@@ -1422,7 +1422,7 @@ void UavOffboardFsm::clearActiveTarget()
 }
 
 // 下发活动目标：通过 traj_offboard 的 set_target 服务把目标位置、速度、加速度和偏航速度发送给轨迹节点。
-bool UavOffboardFsm::sendActiveTarget(bool throttle_success_log)
+bool UavOffboardFsm::sendActiveTarget()
 {
     if (!active_target_) {
         return false;
@@ -1459,23 +1459,17 @@ bool UavOffboardFsm::sendActiveTarget(bool throttle_success_log)
     last_target_sent_time_ = now();
     set_target_client_->async_send_request(
         request,
-        [this, target, throttle_success_log](rclcpp::Client<traj_offboard::srv::SetTarget>::SharedFuture resp_fut) {
+        [this, target](rclcpp::Client<traj_offboard::srv::SetTarget>::SharedFuture resp_fut) {
             std::lock_guard<std::mutex> lock(fsm_mutex_);
             target_request_pending_ = false;
             try {
                 const auto resp = resp_fut.get();
                 if (resp->success) {
                     active_target_sent_ = true;
-                    if (throttle_success_log) {
-                        RCLCPP_INFO_THROTTLE(
-                            get_logger(), *get_clock(), 1000,
-                            LOG_COLOR_BLUE "Target accepted by bridge | service=online_traj_generator/set_target target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
-                            target.x, target.y, target.z, target.yaw);
-                    } else {
-                        RCLCPP_INFO(get_logger(),
-                                    LOG_COLOR_BLUE "Target accepted by bridge | service=online_traj_generator/set_target target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
-                                    target.x, target.y, target.z, target.yaw);
-                    }
+                    RCLCPP_DEBUG_THROTTLE(
+                        get_logger(), *get_clock(), 2000,
+                        LOG_COLOR_BLUE "Target accepted | target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
+                        target.x, target.y, target.z, target.yaw);
                 } else {
                     active_target_sent_ = false;
                     RCLCPP_ERROR(get_logger(), "Target rejected | service=online_traj_generator/set_target");
@@ -1640,19 +1634,19 @@ void UavOffboardFsm::generateApproachWaypoints()
         travel_distance = std::clamp(*latest_distance_m_ - approach_target_distance_m_,
                                      0.0, approach_max_travel_m_);
         if (travel_distance <= approach_distance_tolerance_m_) {
-            RCLCPP_INFO(get_logger(),
+            RCLCPP_DEBUG(get_logger(),
                         "Approach skip | distance_sensor=%.2fm already within target=%.2fm (tol=%.2fm)",
                         *latest_distance_m_, approach_target_distance_m_,
                         approach_distance_tolerance_m_);
             target_velocity_ = {0.0, 0.0, 0.0};
             return;
         }
-        RCLCPP_INFO(get_logger(),
+        RCLCPP_DEBUG(get_logger(),
                     "Approach plan | source=distance_sensor latest=%.2fm target=%.2fm travel=%.2fm speed=%.2fm/s",
                     *latest_distance_m_, approach_target_distance_m_, travel_distance,
                     approach_speed_m_s_);
     } else {
-        RCLCPP_INFO(get_logger(),
+        RCLCPP_DEBUG(get_logger(),
                     "Approach plan | source=simulation (no distance sensor) travel=%.2fm speed=%.2fm/s",
                     travel_distance, approach_speed_m_s_);
     }
@@ -1697,7 +1691,7 @@ void UavOffboardFsm::generateRetreatWaypoints()
         travel_distance = std::clamp(retreat_target_distance_m_ - *latest_distance_m_,
                                      0.0, retreat_max_travel_m_);
         if (travel_distance <= approach_distance_tolerance_m_) {
-            RCLCPP_INFO(get_logger(),
+            RCLCPP_DEBUG(get_logger(),
                         "Retreat skip | distance_sensor=%.2fm already beyond target=%.2fm (tol=%.2fm)",
                         *latest_distance_m_, retreat_target_distance_m_,
                         approach_distance_tolerance_m_);
@@ -1705,12 +1699,12 @@ void UavOffboardFsm::generateRetreatWaypoints()
             target_max_velocity_xyz_ = {0.0, 0.0, 0.0};
             return;
         }
-        RCLCPP_INFO(get_logger(),
+        RCLCPP_DEBUG(get_logger(),
                     "Retreat plan | source=distance_sensor latest=%.2fm target=%.2fm travel=%.2fm speed=%.2fm/s",
                     *latest_distance_m_, retreat_target_distance_m_, travel_distance,
                     retreat_speed_m_s_);
     } else {
-        RCLCPP_INFO(get_logger(),
+        RCLCPP_DEBUG(get_logger(),
                     "Retreat plan | source=simulation (no distance sensor) travel=%.2fm speed=%.2fm/s",
                     travel_distance, retreat_speed_m_s_);
     }
@@ -1812,7 +1806,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
         resetMissionProgress();
         self_check_requested_ = true;
         transitionTo(ControlState::SELF_CHECK);
-        RCLCPP_INFO(get_logger(), "Command accepted | source=%s -> SELF_CHECK", source.c_str());
+        RCLCPP_DEBUG(get_logger(), "Command accepted | source=%s -> SELF_CHECK", source.c_str());
         return;
     }
 
@@ -1822,7 +1816,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             targ_got_confirm_pending_ = false;
             task_term_confirm_pending_ = false;
             transitionTo(ControlState::UAV_TASK_TERM);
-            RCLCPP_INFO(get_logger(), "Command accepted | NO + CONFIRM -> UAV_TASK_TERM");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | NO + CONFIRM -> UAV_TASK_TERM");
             return;
         }
 
@@ -1831,7 +1825,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             arm_config_prepared_ = false;
             sampl_opera_completed_ = false;
             transitionTo(ControlState::UAV_HOLD);
-            RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL CONFIRM uavAdjustSucceed=1");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL CONFIRM uavAdjustSucceed=1");
             return;
         }
 
@@ -1859,7 +1853,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                             LOG_COLOR_GREEN "Command accepted | WAIT_TASK_ENABLE_AUTH -> UAV_HOLD direct mode" LOG_COLOR_RESET);
             } else {
                 transitionTo(ControlState::UAV_START);
-                RCLCPP_INFO(get_logger(), "Command accepted | WAIT_TASK_ENABLE_AUTH -> UAV_START");
+                RCLCPP_DEBUG(get_logger(), "Command accepted | WAIT_TASK_ENABLE_AUTH -> UAV_START");
             }
         } else {
             REJECT_WARN(
@@ -1878,12 +1872,12 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 return;
             }
             transitionTo(ControlState::TRANSIT_TO_AREA);
-            RCLCPP_INFO(get_logger(), "Command accepted | NAV_TO_TASK_DOM -> TRANSIT_TO_AREA");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | NAV_TO_TASK_DOM -> TRANSIT_TO_AREA");
             break;
         case CommandType::ARRIVE_TASK_DOM:
             if (state == ControlState::TRANSIT_TO_AREA && is_arrived_task_aera_) {
                 transitionTo(ControlState::UAV_ARRIVED_AERA);
-                RCLCPP_INFO(get_logger(), "Command accepted | ARRIVE_TASK_DOM -> UAV_ARRIVED_AERA");
+                RCLCPP_DEBUG(get_logger(), "Command accepted | ARRIVE_TASK_DOM -> UAV_ARRIVED_AERA");
                 return;
             }
             REJECT_WARN(
@@ -1913,7 +1907,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             targ_got_confirm_pending_ = false;
             task_term_confirm_pending_ = false;
             transitionTo(ControlState::SEARCH_ADJUST_AUTO);
-            RCLCPP_INFO(get_logger(), "Command accepted | SEARCH_ADJUST_AUTO");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | SEARCH_ADJUST_AUTO");
             break;
         case CommandType::SEARCH_ADJUST_MANUAL:
             if (state != ControlState::UAV_ARRIVED_AERA || !is_arrived_task_aera_ || approach_completed_) {
@@ -1926,7 +1920,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             targ_got_confirm_pending_ = false;
             task_term_confirm_pending_ = false;
             transitionTo(ControlState::SEARCH_ADJUST_MANUAL);
-            RCLCPP_INFO(get_logger(), "Command accepted | SEARCH_ADJUST_MANUAL");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | SEARCH_ADJUST_MANUAL");
             break;
         case CommandType::TARG_GOT:
             if (!is_arrived_task_aera_ ||
@@ -1947,16 +1941,16 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             clearActiveTarget();
             task_term_confirm_pending_ = false;
             requestSwitchChoice(state, {ControlState::APPROACH_PLANT}, "TARG_GOT");
-            RCLCPP_INFO(get_logger(), "Command accepted | TARG_GOT -> APPROACH_PLANT, waiting for approval");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | TARG_GOT -> APPROACH_PLANT, waiting for approval");
             break;
         case CommandType::TARG_READY:
             if (state == ControlState::APPROACH_PLANT && approach_completed_) {
                 transitionTo(ControlState::UAV_PRE_HOLD);
-                RCLCPP_INFO(get_logger(), "Command accepted | TARG_READY -> UAV_PRE_HOLD");
+                RCLCPP_DEBUG(get_logger(), "Command accepted | TARG_READY -> UAV_PRE_HOLD");
                 return;
             }
             if (state == ControlState::UAV_PRE_HOLD && approach_completed_) {
-                RCLCPP_INFO(get_logger(), "Command accepted | TARG_READY already in UAV_PRE_HOLD");
+                RCLCPP_DEBUG(get_logger(), "Command accepted | TARG_READY already in UAV_PRE_HOLD");
                 return;
             }
             REJECT_WARN(
@@ -1984,7 +1978,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             }
             task_term_confirm_pending_ = false;
             transitionTo(ControlState::SAMP_ADJUST_AUTO);
-            RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_AUTO");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | SAMP_ADJUST_AUTO");
             break;
         case CommandType::SAMP_ADJUST_MANUAL:
             if (state != ControlState::UAV_PRE_HOLD || !approach_completed_) {
@@ -1995,7 +1989,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             }
             task_term_confirm_pending_ = false;
             transitionTo(ControlState::SAMP_ADJUST_MANUAL);
-            RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL");
             break;
         case CommandType::ARM_CONFIG_PREP:
             if (state == ControlState::UAV_PRE_HOLD && approach_completed_) {
@@ -2032,7 +2026,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
         case CommandType::UAV_PRE_BACK_HOME:
             if (state == ControlState::UAV_TASK_TERM) {
                 transitionTo(ControlState::RETREAT);
-                RCLCPP_INFO(get_logger(), "Command accepted | UAV_PRE_BACK_HOME from UAV_TASK_TERM");
+                RCLCPP_DEBUG(get_logger(), "Command accepted | UAV_PRE_BACK_HOME from UAV_TASK_TERM");
                 return;
             }
             if (state != ControlState::UAV_HOLD || !ready_for_transit_ ||
@@ -2046,12 +2040,12 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 return;
             }
             transitionTo(ControlState::RETREAT);
-            RCLCPP_INFO(get_logger(), "Command accepted | UAV_PRE_BACK_HOME -> RETREAT");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | UAV_PRE_BACK_HOME -> RETREAT");
         break;
         case CommandType::BACK_HOME:
             if (state == ControlState::UAV_TASK_TERM) {
                 transitionTo(ControlState::UAV_BACK_HOME);
-                RCLCPP_INFO(get_logger(), "Command accepted | BACK_HOME from UAV_TASK_TERM");
+                RCLCPP_DEBUG(get_logger(), "Command accepted | BACK_HOME from UAV_TASK_TERM");
                 return;
             }
             if (state != ControlState::RETREAT || !uav_ready_for_back_) {
@@ -2061,14 +2055,14 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 return;
             }
             transitionTo(ControlState::UAV_BACK_HOME);
-            RCLCPP_INFO(get_logger(), "Command accepted | BACK_HOME");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | BACK_HOME");
             break;
         case CommandType::TASK_TERM:
             clearActiveTarget();
             targ_got_confirm_pending_ = false;
             task_term_confirm_pending_ = false;
             transitionTo(ControlState::UAV_TASK_TERM);
-            RCLCPP_INFO(get_logger(), "Command accepted | TASK_TERM -> UAV_TASK_TERM");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | TASK_TERM -> UAV_TASK_TERM");
             break;
         case CommandType::NO: 
         {
@@ -2102,7 +2096,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
             clearActiveTarget();
             targ_got_confirm_pending_ = false;
             task_term_confirm_pending_ = true;
-            RCLCPP_INFO(get_logger(), "Command accepted | NO waiting CONFIRM for UAV_TASK_TERM");
+            RCLCPP_DEBUG(get_logger(), "Command accepted | NO waiting CONFIRM for UAV_TASK_TERM");
         }
         break;
         case CommandType::CONFIRM:
