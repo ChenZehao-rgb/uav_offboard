@@ -74,10 +74,26 @@ class UavOffboardFsm : public rclcpp::Node {
         hold_adjust_target_update_tolerance_m_ =
             declare_parameter<double>("hold_adjust_target_update_tolerance_m",
                                       hold_adjust_target_update_tolerance_m_);
-        hold_adjust_max_xy_step_m_ =
-            declare_parameter<double>("hold_adjust_max_xy_step_m", hold_adjust_max_xy_step_m_);
-        hold_adjust_max_z_step_m_ =
-            declare_parameter<double>("hold_adjust_max_z_step_m", hold_adjust_max_z_step_m_);
+        hold_adjust_x_range_m_ = parseHoldAdjustRangeParameter(
+            declare_parameter<std::vector<double>>(
+                "hold_adjust_x_range_m",
+                {hold_adjust_x_range_m_[0], hold_adjust_x_range_m_[1]}),
+            hold_adjust_x_range_m_, "hold_adjust_x_range_m", false);
+        hold_adjust_y_range_m_ = parseHoldAdjustRangeParameter(
+            declare_parameter<std::vector<double>>(
+                "hold_adjust_y_range_m",
+                {hold_adjust_y_range_m_[0], hold_adjust_y_range_m_[1]}),
+            hold_adjust_y_range_m_, "hold_adjust_y_range_m", false);
+        hold_adjust_z_range_m_ = parseHoldAdjustRangeParameter(
+            declare_parameter<std::vector<double>>(
+                "hold_adjust_z_range_m",
+                {hold_adjust_z_range_m_[0], hold_adjust_z_range_m_[1]}),
+            hold_adjust_z_range_m_, "hold_adjust_z_range_m", false);
+        hold_adjust_yaw_range_rad_ = parseHoldAdjustRangeParameter(
+            declare_parameter<std::vector<double>>(
+                "hold_adjust_yaw_range_rad",
+                {hold_adjust_yaw_range_rad_[0], hold_adjust_yaw_range_rad_[1]}),
+            hold_adjust_yaw_range_rad_, "hold_adjust_yaw_range_rad", true);
         hold_adjust_max_velocity_xyz_ = parseVector3Parameter(
             declare_parameter<std::vector<double>>(
                 "hold_adjust_max_velocity_xyz",
@@ -202,12 +218,10 @@ class UavOffboardFsm : public rclcpp::Node {
         double yawspeed{0.0};
     };
     using Vector3 = std::array<double, 3>;
+    using Range = std::array<double, 2>;
     struct TimedHoldSetpoint {
         Vector3 position;
-        Vector3 velocity;
-        Vector3 acceleration;
         std::optional<double> yaw;
-        std::optional<double> yawspeed;
         rclcpp::Time stamp;
     };
     static constexpr double yawspeed_update_tolerance_rad_s_{1e-3};
@@ -294,6 +308,7 @@ class UavOffboardFsm : public rclcpp::Node {
     std::optional<sensor_msgs::msg::JointState> latest_actual_state_;
     std::optional<sensor_msgs::msg::JointState> latest_reference_state_;
     rclcpp::Time last_actual_state_time_{0, 0, RCL_ROS_TIME};
+    rclcpp::Time last_actual_yaw_time_{0, 0, RCL_ROS_TIME};
     rclcpp::Time last_reference_state_time_{0, 0, RCL_ROS_TIME};
     double home_x_{0.0};
     double home_y_{0.0};
@@ -303,11 +318,8 @@ class UavOffboardFsm : public rclcpp::Node {
     std::optional<double> latest_distance_m_;
     rclcpp::Time last_distance_sensor_time_{0, 0, RCL_ROS_TIME};
     std::optional<Vector3> latest_hold_uav_setpoint_;
-    std::optional<Vector3> latest_hold_uav_velocity_;
-    std::optional<Vector3> latest_hold_uav_acceleration_;
     rclcpp::Time last_hold_pos_des_time_{0, 0, RCL_ROS_TIME};
     std::optional<double> latest_hold_uav_yaw_;
-    std::optional<double> latest_hold_uav_yaw_rate_;
 
     traj_offboard::msg::TrajCompleteFlag traj_complete_flag_;
     //状态机内部状态标志位和参数
@@ -332,6 +344,7 @@ class UavOffboardFsm : public rclcpp::Node {
     bool hold_adjust_stale_hold_sent_{false};
     rclcpp::Time hold_adjust_last_planned_pos_des_time_{0, 0, RCL_ROS_TIME};
     rclcpp::Time hold_adjust_last_target_update_time_{0, 0, RCL_ROS_TIME};
+    std::optional<Waypoint> hold_adjust_base_;
 
     double position_tolerance_{0.1};
     double yaw_tolerance_{0.1}; // 0.1 radian，约5.7度
@@ -363,8 +376,10 @@ class UavOffboardFsm : public rclcpp::Node {
     double hold_adjust_pos_des_timeout_s_{1.0};
     double hold_adjust_min_update_period_s_{0.0};
     double hold_adjust_target_update_tolerance_m_{0.02};
-    double hold_adjust_max_xy_step_m_{0.5};
-    double hold_adjust_max_z_step_m_{0.3};
+    Range hold_adjust_x_range_m_{-0.5, 0.5};
+    Range hold_adjust_y_range_m_{-0.5, 0.5};
+    Range hold_adjust_z_range_m_{-0.3, 0.3};
+    Range hold_adjust_yaw_range_rad_{-0.35, 0.35};
     // UAV_HOLD 调整段 Ruckig 平动速度上限；分量 <=0 表示沿用全局默认。
     Vector3 hold_adjust_max_velocity_xyz_{0.0, 0.0, 0.0};
     std::array<double, 3> target_velocity_{0.0, 0.0, 0.0};
@@ -455,6 +470,7 @@ class UavOffboardFsm : public rclcpp::Node {
     bool isUAVTakeoff();
     bool isWaypointReached(const Waypoint & waypoint, const sensor_msgs::msg::JointState & state);
     std::optional<Waypoint> currentWaypoint();
+    std::optional<Waypoint> currentActualWaypoint();
     Waypoint currentOrHoverWaypoint();
     Waypoint waypointFromSetpoint(const px4_msgs::msg::TrajectorySetpoint & setpoint) const;
     bool hasFreshDistanceSensor();
@@ -497,6 +513,10 @@ class UavOffboardFsm : public rclcpp::Node {
     static std::vector<Waypoint> parseWaypointParameter(const std::vector<double> & flat);
     static std::array<double, 3> parseVector3Parameter(const std::vector<double> & flat,
                                                        const std::array<double, 3> & fallback);
+    Range parseHoldAdjustRangeParameter(const std::vector<double> & flat,
+                                        const Range & fallback,
+                                        const char * parameter_name,
+                                        bool is_yaw_range);
     static std::string stateToString(ControlState state);
     static int stateToId(ControlState state);
     static std::optional<ControlState> statusIdToState(uint8_t status);
@@ -546,6 +566,7 @@ void UavOffboardFsm::controlLoopOnTimer()
 void UavOffboardFsm::onStateEntry(ControlState state)
 {
     clearActiveTarget();
+    hold_adjust_base_.reset();
     // 默认航点末端速度/加速度为 0、不覆盖 Ruckig 速度上限。
     target_velocity_ = {0.0, 0.0, 0.0};
     target_acceleration_ = {0.0, 0.0, 0.0};
@@ -679,6 +700,7 @@ void UavOffboardFsm::resetMissionProgress()
     hold_adjust_stale_hold_sent_ = false;
     hold_adjust_last_planned_pos_des_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     hold_adjust_last_target_update_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    hold_adjust_base_.reset();
     hold_adjust_waypoints_.clear();
     hold_adjust_index_ = 0;
 }
@@ -964,6 +986,11 @@ bool UavOffboardFsm::handleUavHoldAdjust()
     }
     const auto desired_setpoint = latestFreshHoldUavSetpoint();
     if (!desired_setpoint) {
+        if (hold_adjust_base_) {
+            hold_adjust_base_.reset();
+            RCLCPP_WARN(get_logger(),
+                        "UAV_HOLD adjust stale | safety base cleared; next fresh setpoint will capture a new base");
+        }
         if (!hold_adjust_started_) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
                                  "UAV_HOLD adjust pending | waiting fresh whole_body_planner uav setpoint");
@@ -988,6 +1015,26 @@ bool UavOffboardFsm::handleUavHoldAdjust()
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
                              "UAV_HOLD adjust paused | whole_body_planner uav setpoint is stale");
         return true;
+    }
+
+    if (!hold_adjust_base_) {
+        const auto actual_pose = currentActualWaypoint();
+        if (!actual_pose) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), hovering_log_throttle_ms_,
+                "UAV_HOLD adjust blocked | waiting for fresh finite PX4 position/yaw to capture safety base");
+            return false;
+        }
+        hold_adjust_base_ = *actual_pose;
+        RCLCPP_INFO(
+            get_logger(),
+            LOG_COLOR_GREEN "UAV_HOLD adjust safety base captured | actual=(%.3f, %.3f, %.3f, yaw %.3f) range_x=[%.3f, %.3f] range_y=[%.3f, %.3f] range_z=[%.3f, %.3f] range_yaw=[%.3f, %.3f]" LOG_COLOR_RESET,
+            hold_adjust_base_->x, hold_adjust_base_->y, hold_adjust_base_->z,
+            hold_adjust_base_->yaw,
+            hold_adjust_x_range_m_[0], hold_adjust_x_range_m_[1],
+            hold_adjust_y_range_m_[0], hold_adjust_y_range_m_[1],
+            hold_adjust_z_range_m_[0], hold_adjust_z_range_m_[1],
+            hold_adjust_yaw_range_rad_[0], hold_adjust_yaw_range_rad_[1]);
     }
 
     if (desired_setpoint->stamp.nanoseconds() <=
@@ -1029,26 +1076,10 @@ bool UavOffboardFsm::handleUavHoldAdjust()
     }
 
     target_max_velocity_xyz_ = hold_adjust_max_velocity_xyz_;
-    target_velocity_ = desired_setpoint->velocity;
-    target_acceleration_ = desired_setpoint->acceleration;
-    const bool use_x_target =
-        use_xy_adjust_ && std::isfinite(desired_setpoint->position[0]);
-    const bool use_y_target =
-        use_xy_adjust_ && std::isfinite(desired_setpoint->position[1]);
-    const bool use_z_target =
-        use_z_adjust_ && std::isfinite(desired_setpoint->position[2]);
-    if (!use_x_target) {
-        target_velocity_[0] = 0.0;
-        target_acceleration_[0] = 0.0;
-    }
-    if (!use_y_target) {
-        target_velocity_[1] = 0.0;
-        target_acceleration_[1] = 0.0;
-    }
-    if (!use_z_target) {
-        target_velocity_[2] = 0.0;
-        target_acceleration_[2] = 0.0;
-    }
+    // whole_body_planner only supplies the terminal position and yaw here.
+    // Its velocity/acceleration feed-forward is intentionally not forwarded.
+    target_velocity_ = {0.0, 0.0, 0.0};
+    target_acceleration_ = {0.0, 0.0, 0.0};
     setActiveTarget(target);
     if (!sendActiveTarget()) {
         clearActiveTarget();
@@ -1072,9 +1103,14 @@ bool UavOffboardFsm::generateHoldAdjustWaypoints(
     hold_adjust_waypoints_.clear();
     hold_adjust_index_ = 0;
 
-    const auto base = currentOrHoverWaypoint();
+    if (!hold_adjust_base_) {
+        return false;
+    }
+
+    const auto current_reference = currentOrHoverWaypoint();
+    const auto & safety_base = *hold_adjust_base_;
     const auto & desired = desired_setpoint.position;
-    Waypoint target = base;
+    Waypoint target = current_reference;
     if (use_xy_adjust_) {
         if (std::isfinite(desired[0])) {
             target.x = desired[0];
@@ -1086,44 +1122,53 @@ bool UavOffboardFsm::generateHoldAdjustWaypoints(
     if (use_z_adjust_ && std::isfinite(desired[2])) {
         target.z = desired[2];
     }
-    target.yaw =
-        use_yaw_adjust_ ? desired_setpoint.yaw.value_or(base.yaw) : base.yaw;
-    target.yawspeed =
-        (use_yaw_adjust_ && desired_setpoint.yaw) ?
-        desired_setpoint.yawspeed.value_or(0.0) :
-        0.0;
+    target.yaw = use_yaw_adjust_
+                     ? desired_setpoint.yaw.value_or(current_reference.yaw)
+                     : current_reference.yaw;
+    target.yawspeed = 0.0;
 
+    const Waypoint raw_target = target;
     bool clamped = false;
-    if (use_xy_adjust_ && hold_adjust_max_xy_step_m_ > 0.0) {
-        const double dx = target.x - base.x;
-        const double dy = target.y - base.y;
-        const double dist_xy = std::hypot(dx, dy);
-        if (dist_xy > hold_adjust_max_xy_step_m_) {
-            const double scale = hold_adjust_max_xy_step_m_ / dist_xy;
-            target.x = base.x + dx * scale;
-            target.y = base.y + dy * scale;
+    const auto clamp_position = [&clamped](double value, double base,
+                                           const Range & range) {
+        const double clamped_value =
+            std::clamp(value, base + range[0], base + range[1]);
+        if (std::abs(clamped_value - value) > 1e-9) {
             clamped = true;
+        }
+        return clamped_value;
+    };
+    if (use_xy_adjust_) {
+        if (std::isfinite(desired[0])) {
+            target.x = clamp_position(target.x, safety_base.x, hold_adjust_x_range_m_);
+        }
+        if (std::isfinite(desired[1])) {
+            target.y = clamp_position(target.y, safety_base.y, hold_adjust_y_range_m_);
         }
     }
-    if (use_z_adjust_ && hold_adjust_max_z_step_m_ > 0.0) {
-        const double dz = target.z - base.z;
-        const double clamped_dz =
-            std::clamp(dz, -hold_adjust_max_z_step_m_, hold_adjust_max_z_step_m_);
-        if (std::abs(clamped_dz - dz) > 1e-9) {
-            target.z = base.z + clamped_dz;
+    if (use_z_adjust_ && std::isfinite(desired[2])) {
+        target.z = clamp_position(target.z, safety_base.z, hold_adjust_z_range_m_);
+    }
+    if (use_yaw_adjust_ && desired_setpoint.yaw) {
+        const double yaw_delta = wrapAngle(target.yaw - safety_base.yaw);
+        const double clamped_yaw_delta =
+            std::clamp(yaw_delta, hold_adjust_yaw_range_rad_[0],
+                       hold_adjust_yaw_range_rad_[1]);
+        if (std::abs(clamped_yaw_delta - yaw_delta) > 1e-9) {
             clamped = true;
         }
+        target.yaw = wrapAngle(safety_base.yaw + clamped_yaw_delta);
     }
 
     const double update_tol = std::max(0.0, hold_adjust_target_update_tolerance_m_);
     const bool need_position_adjust =
         (use_xy_adjust_ &&
-         (std::abs(target.x - base.x) > update_tol ||
-          std::abs(target.y - base.y) > update_tol)) ||
-        (use_z_adjust_ && std::abs(target.z - base.z) > update_tol);
+         (std::abs(target.x - current_reference.x) > update_tol ||
+          std::abs(target.y - current_reference.y) > update_tol)) ||
+        (use_z_adjust_ && std::abs(target.z - current_reference.z) > update_tol);
     const bool need_yaw_adjust =
         use_yaw_adjust_ && desired_setpoint.yaw &&
-        std::abs(wrapAngle(target.yaw - base.yaw)) > yaw_tolerance_;
+        std::abs(wrapAngle(target.yaw - current_reference.yaw)) > yaw_tolerance_;
     const bool need_yawspeed_adjust =
         !active_target_ &&
         std::abs(target.yawspeed) > yawspeed_update_tolerance_rad_s_;
@@ -1135,8 +1180,10 @@ bool UavOffboardFsm::generateHoldAdjustWaypoints(
     }
 
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 2000,
-                          "UAV_HOLD adjust plan | current=(%.3f, %.3f, %.3f, yaw %.3f) desired_fsm=(%.3f, %.3f, %.3f) target=(%.3f, %.3f, %.3f, yaw %.3f, yawspeed %.3f) waypoints=%zu use_xy=%s use_z=%s use_yaw=%s clamped=%s",
-                          base.x, base.y, base.z, base.yaw,
+                          "UAV_HOLD adjust plan | current=(%.3f, %.3f, %.3f, yaw %.3f) safety_base=(%.3f, %.3f, %.3f, yaw %.3f) desired_fsm=(%.3f, %.3f, %.3f) target=(%.3f, %.3f, %.3f, yaw %.3f, yawspeed %.3f) waypoints=%zu use_xy=%s use_z=%s use_yaw=%s clamped=%s",
+                          current_reference.x, current_reference.y,
+                          current_reference.z, current_reference.yaw,
+                          safety_base.x, safety_base.y, safety_base.z, safety_base.yaw,
                           desired[0], desired[1], desired[2],
                           target.x, target.y, target.z, target.yaw, target.yawspeed,
                           hold_adjust_waypoints_.size(),
@@ -1146,8 +1193,12 @@ bool UavOffboardFsm::generateHoldAdjustWaypoints(
                           clamped ? "true" : "false");
     if (clamped) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "UAV_HOLD adjust safety clamp active | max_xy_step=%.3f max_z_step=%.3f",
-                             hold_adjust_max_xy_step_m_, hold_adjust_max_z_step_m_);
+                             "UAV_HOLD adjust safety clamp active | base=(%.3f, %.3f, %.3f, yaw %.3f) raw=(%.3f, %.3f, %.3f, yaw %.3f) clamped=(%.3f, %.3f, %.3f, yaw %.3f)",
+                             safety_base.x, safety_base.y, safety_base.z,
+                             safety_base.yaw,
+                             raw_target.x, raw_target.y, raw_target.z,
+                             raw_target.yaw,
+                             target.x, target.y, target.z, target.yaw);
     }
     return true;
 }
@@ -1170,18 +1221,12 @@ bool UavOffboardFsm::isHoldAdjustTargetUpdateNeeded(const Waypoint & target) con
 std::optional<UavOffboardFsm::TimedHoldSetpoint> UavOffboardFsm::latestFreshHoldUavSetpoint()
 {
     std::optional<Vector3> pos_copy;
-    std::optional<Vector3> vel_copy;
-    std::optional<Vector3> acc_copy;
     std::optional<double> yaw_copy;
-    std::optional<double> yawspeed_copy;
     rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
     {
         std::lock_guard<std::mutex> lock(latest_state_mutex_);
         pos_copy = latest_hold_uav_setpoint_;
-        vel_copy = latest_hold_uav_velocity_;
-        acc_copy = latest_hold_uav_acceleration_;
         yaw_copy = latest_hold_uav_yaw_;
-        yawspeed_copy = latest_hold_uav_yaw_rate_;
         stamp = last_hold_pos_des_time_;
     }
     if (!pos_copy || stamp.nanoseconds() == 0 ||
@@ -1190,10 +1235,7 @@ std::optional<UavOffboardFsm::TimedHoldSetpoint> UavOffboardFsm::latestFreshHold
     }
     return TimedHoldSetpoint{
         *pos_copy,
-        vel_copy.value_or(Vector3{0.0, 0.0, 0.0}),
-        acc_copy.value_or(Vector3{0.0, 0.0, 0.0}),
         yaw_copy,
-        yawspeed_copy,
         stamp};
 }
 
@@ -1542,6 +1584,37 @@ std::optional<UavOffboardFsm::Waypoint> UavOffboardFsm::currentWaypoint()
         state_copy->position[1],
         state_copy->position[2],
         state_copy->position[3]};
+}
+
+// 读取新鲜且有限的 PX4 实际位姿；UAV_HOLD 安全范围以该状态为固定基准。
+std::optional<UavOffboardFsm::Waypoint> UavOffboardFsm::currentActualWaypoint()
+{
+    std::optional<sensor_msgs::msg::JointState> state_copy;
+    rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
+    rclcpp::Time yaw_stamp{0, 0, RCL_ROS_TIME};
+    {
+        std::lock_guard<std::mutex> lock(latest_state_mutex_);
+        state_copy = latest_actual_state_;
+        stamp = last_actual_state_time_;
+        yaw_stamp = last_actual_yaw_time_;
+    }
+    if (!state_copy || state_copy->position.size() < 4 ||
+        stamp.nanoseconds() == 0 ||
+        yaw_stamp.nanoseconds() == 0 ||
+        (now() - stamp).seconds() > vehicle_local_position_timeout_s_ ||
+        (now() - yaw_stamp).seconds() > vehicle_local_position_timeout_s_) {
+        return std::nullopt;
+    }
+    for (std::size_t id = 0; id < 4; ++id) {
+        if (!std::isfinite(state_copy->position[id])) {
+            return std::nullopt;
+        }
+    }
+    return Waypoint{
+        state_copy->position[0],
+        state_copy->position[1],
+        state_copy->position[2],
+        wrapAngle(state_copy->position[3])};
 }
 
 // 获取当前位置或悬停默认点：有新鲜参考设定点时返回它；否则回退到最近的里程碑点——
@@ -2342,15 +2415,17 @@ void UavOffboardFsm::handleVehicleLocalPosition(
         home_x = home_x_;
         home_y = home_y_;
         home_z = home_z_;
-        if (latest_actual_state_ && latest_actual_state_->position.size() >= 4) {
+        if (latest_actual_state_ && latest_actual_state_->position.size() >= 4 &&
+            last_actual_yaw_time_.nanoseconds() != 0) {
             previous_yaw = latest_actual_state_->position[3];
             has_previous_yaw = true;
         }
     }
 
-    const double yaw =
-        std::isfinite(msg->heading) ? wrapAngle(heading_yaw_offset_rad_ - msg->heading) :
-                                      (has_previous_yaw ? previous_yaw : 0.0);
+    const bool heading_valid = std::isfinite(msg->heading);
+    const double yaw = heading_valid
+                           ? wrapAngle(heading_yaw_offset_rad_ - msg->heading)
+                           : (has_previous_yaw ? previous_yaw : 0.0);
 
     state.position = {
         static_cast<double>(msg->y) - home_y,
@@ -2361,6 +2436,9 @@ void UavOffboardFsm::handleVehicleLocalPosition(
     std::lock_guard<std::mutex> lock(latest_state_mutex_);
     latest_actual_state_ = state;
     last_actual_state_time_ = state.header.stamp;
+    if (heading_valid) {
+        last_actual_yaw_time_ = state.header.stamp;
+    }
 }
 
 // PX4 Home 位置回调：记录 PX4 home 原点，用于后续把 PX4 位置转换为相对本地坐标。
@@ -2413,33 +2491,16 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
         return;
     }
 
-    // const auto finiteOrZero = [](float value) -> double {
-    //     return std::isfinite(value) ? static_cast<double>(value) : 0.0;
-    // };
     const Vector3 pos_ned{
         static_cast<double>(msg->position[0]),
         static_cast<double>(msg->position[1]),
         static_cast<double>(msg->position[2])};
-    // const Vector3 vel_ned{
-    //     finiteOrZero(msg->velocity[0]),
-    //     finiteOrZero(msg->velocity[1]),
-    //     finiteOrZero(msg->velocity[2])};
-    // const Vector3 acc_ned{
-    //     finiteOrZero(msg->acceleration[0]),
-    //     finiteOrZero(msg->acceleration[1]),
-    //     finiteOrZero(msg->acceleration[2])};
 
     Vector3 pos_fsm{};
-    // Vector3 vel_fsm{};
     std::optional<double> yaw_fsm;
-    // std::optional<double> yawspeed_fsm;
-    // Vector3 acc_fsm{};
     if (std::isfinite(msg->yaw)) {
         yaw_fsm =
             wrapAngle(heading_yaw_offset_rad_ - static_cast<double>(msg->yaw));
-        // if (std::isfinite(msg->yawspeed)) {
-        //     yawspeed_fsm = -static_cast<double>(msg->yawspeed);
-        // }
     }
     if (use_yaw_adjust_ && !yaw_fsm && std::isfinite(msg->yawspeed) &&
         std::abs(msg->yawspeed) > yawspeed_update_tolerance_rad_s_) {
@@ -2469,19 +2530,8 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
                 std::isfinite(pos_ned[1]) ? pos_ned[1] - home_y_ : pos_ned[1],
                 std::isfinite(pos_ned[0]) ? pos_ned[0] - home_x_ : pos_ned[0],
                 std::isfinite(pos_ned[2]) ? -pos_ned[2] + home_z_ : pos_ned[2]};
-            // vel_fsm = {
-            //     vel_ned[1],
-            //     vel_ned[0],
-            //     -vel_ned[2]};
-            // acc_fsm = {
-            //     acc_ned[1],
-            //     acc_ned[0],
-            //     -acc_ned[2]};
             latest_hold_uav_setpoint_ = pos_fsm;
-            // latest_hold_uav_velocity_ = vel_fsm;
-            // latest_hold_uav_acceleration_ = acc_fsm;
             latest_hold_uav_yaw_ = yaw_fsm;
-            // latest_hold_uav_yaw_rate_ = yawspeed_fsm;
             last_hold_pos_des_time_ = stamp;
         }
     }
@@ -2494,7 +2544,6 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
                           "Whole body UAV setpoint received | ned=(%.3f, %.3f, %.3f) fsm=(%.3f, %.3f, %.3f) yaw_controlled=%s yaw_fsm=%.3f",
                           pos_ned[0], pos_ned[1], pos_ned[2],
                           pos_fsm[0], pos_fsm[1], pos_fsm[2],
-                        //   vel_fsm[0], vel_fsm[1], vel_fsm[2],
                           yaw_fsm ? "true" : "false",
                           yaw_fsm.value_or(0.0));
 }
@@ -2551,6 +2600,31 @@ UavOffboardFsm::parseVector3Parameter(const std::vector<double> & flat,
         return fallback;
     }
     return {flat[0], flat[1], flat[2]};
+}
+
+UavOffboardFsm::Range UavOffboardFsm::parseHoldAdjustRangeParameter(
+    const std::vector<double> & flat,
+    const Range & fallback,
+    const char * parameter_name,
+    bool is_yaw_range)
+{
+    const bool valid_size = flat.size() == 2;
+    const bool valid_values =
+        valid_size && std::isfinite(flat[0]) && std::isfinite(flat[1]) &&
+        flat[0] <= 0.0 && flat[1] >= 0.0 && flat[0] <= flat[1];
+    const bool valid_yaw =
+        !is_yaw_range ||
+        (valid_values && flat[0] >= -M_PI && flat[1] <= M_PI);
+    if (!valid_values || !valid_yaw) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "Invalid %s | expected [negative_offset, positive_offset]%s; using fallback [%.3f, %.3f]",
+            parameter_name,
+            is_yaw_range ? " within [-pi, pi]" : "",
+            fallback[0], fallback[1]);
+        return fallback;
+    }
+    return {flat[0], flat[1]};
 }
 
 // 状态枚举转字符串：统一生成发布给外部节点和日志使用的状态名。

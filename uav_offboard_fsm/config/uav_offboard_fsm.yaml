@@ -37,10 +37,12 @@ uav_offboard_fsm:
     hold_adjust_target_update_tolerance_m: 0.00
 
 
-    # 单次下发目标相对当前 Ruckig 参考点的最大步长；<=0 表示关闭该轴限幅，单位 m。
-    # max velocity 也会限制实际步长; max_velocity_xy = 0.2m/s, update_period = 0.05s 时，最大步长约为 0.01m。
-    hold_adjust_max_xy_step_m: 0.25
-    hold_adjust_max_z_step_m: 0.25
+    # 以本轮首次有效 setpoint 到达时的真实 PX4 位姿为固定 base，
+    # 分别配置各轴相对 base 的 [负向偏移, 正向偏移] 安全范围。
+    hold_adjust_x_range_m: [-0.4, 0.4]
+    hold_adjust_y_range_m: [-0.3, 0.3]
+    hold_adjust_z_range_m: [-0.15, 0.15]
+    hold_adjust_yaw_range_rad: [-0.3, 0.3]
 
     # UAV_HOLD 调整段 Ruckig 平动速度上限；分量 <=0 表示沿用全局默认。
     hold_adjust_max_velocity_xyz: [0.2, 0.2, 0.1]
