@@ -2637,15 +2637,11 @@ UavOffboardFsm::parseCommand(const std::string & command) const
         return std::nullopt;
 }
 
-// main_task_state 索引映射：当前可由键盘模拟，也可直接订阅总状态机发布的 Status.status。
+// main_task_state 索引映射：10 触发自检，11 在自检成功后授权进入后续状态。
 std::optional<UavOffboardFsm::ParsedCommand>
 UavOffboardFsm::commandFromMainTaskStatus(uint8_t status) const
 {
         switch (status) {
-            case 1:
-                return ParsedCommand{CommandType::PRE_CHECK};
-            case 2:
-                return ParsedCommand{CommandType::WAIT_TASK_ENABLE_AUTH};
             case 3:
                 return ParsedCommand{CommandType::NAV_TO_TASK_DOM};
             case 4:
@@ -2659,9 +2655,9 @@ UavOffboardFsm::commandFromMainTaskStatus(uint8_t status) const
             case 9:
                 return ParsedCommand{CommandType::UAV_POSE_ADAP};
             case 10:
-                return ParsedCommand{CommandType::ARM_CONFIG_PREP};
+                return ParsedCommand{CommandType::PRE_CHECK};
             case 11:
-                return ParsedCommand{CommandType::SAMPL_OPERA};
+                return ParsedCommand{CommandType::WAIT_TASK_ENABLE_AUTH};
             case 12:
                 return ParsedCommand{CommandType::UAV_PRE_BACK_HOME};
             case 13:

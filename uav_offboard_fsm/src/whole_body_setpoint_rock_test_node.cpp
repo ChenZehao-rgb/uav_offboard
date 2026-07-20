@@ -10,6 +10,8 @@
 #include <functional>
 #include <string>
 #include <vector>
+// ros2 run uav_offboard_fsm whole_body_setpoint_rock_test_node   --ros-args   -p trajectory_type:=fixed_velocity   -p axis:=north_east   -p fixed_velocity_north_m_s:=4.15   -p fixed_velocity_east_m_s:=-5.15
+
 
 class WholeBodySetpointRockTest : public rclcpp::Node {
   public:
