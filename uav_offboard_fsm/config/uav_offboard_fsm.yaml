@@ -23,7 +23,7 @@ uav_offboard_fsm:
     # 未控制的位置轴允许填 NaN；仅更新 yaw 时也可将全部 position 填为 NaN。
     # xy/z/yaw 可独立开启；yaw 输入按 NED 定义，FSM 转为 ENU 后交给 Ruckig。
     use_xy_adjust: true
-    use_z_adjust: false
+    use_z_adjust: true
     use_yaw_adjust: true
 
     # UAV 期望 setpoint 新鲜度超时，单位 s。
@@ -39,9 +39,9 @@ uav_offboard_fsm:
 
     # 以本轮首次有效 setpoint 到达时的真实 PX4 位姿为固定 base，
     # 分别配置各轴相对 base 的 [负向偏移, 正向偏移] 安全范围。
-    hold_adjust_x_range_m: [-0.4, 0.4]
-    hold_adjust_y_range_m: [-0.3, 0.3]
-    hold_adjust_z_range_m: [-0.15, 0.15]
+    hold_adjust_x_range_m: [-50.0, 50.0]
+    hold_adjust_y_range_m: [-50.0, 50.0]
+    hold_adjust_z_range_m: [-50.0, 50.0]
     hold_adjust_yaw_range_rad: [-0.3, 0.3]
 
     # UAV_HOLD 调整段 Ruckig 平动速度上限；分量 <=0 表示沿用全局默认。
